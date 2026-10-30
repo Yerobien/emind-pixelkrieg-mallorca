@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel-Krieg</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  #join { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 10; padding: 16px; }
+  #join form { display: flex; flex-direction: column; gap: 12px; width: min(360px, 100%); text-align: center; }
+  #join .brand { font-size: 34px; }
+  #me .title { font-size: 18px; font-weight: 800; }
+  #me .role { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  #me .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; color: #000; font-weight: 800; font-size: 13px; margin-bottom: 6px; }
+  .cd { height: 14px; background: var(--bg); border-radius: 7px; overflow: hidden; margin-top: 10px; }
+  .cd i { display: block; height: 100%; width: 0; }
+  #status { margin-top: 6px; font-weight: 700; }
+  #magic { margin-top: 4px; font-size: 13px; color: var(--muted); }
+  #timer { font: 800 34px ui-monospace, Consolas, monospace; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #2a1215; border: 1px solid #e5484d; color: #fff;
+    padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  canvas { cursor: crosshair; touch-action: manipulation; }
+</style>
+</head>
+<body>
+<div id="join">
+  <form id="joinForm">
+    <div class="brand">PIXEL-KRIEG</div>
+    <div class="legend">Vier Teams, ein KI-Golem, 90 Sekunden. Erobert so viele Felder wie möglich.</div>
+    <input id="name" maxlength="20" placeholder="Dein Name" autocomplete="off" required>
+    <button class="primary">Beitreten</button>
+  </form>
+</div>
+
+<div class="app">
+  <div class="left" id="left">
+    <div id="wrap"><canvas id="cv"></canvas><div id="overlay"></div><div id="event"></div></div>
+    <div id="caption"></div>
+  </div>
+  <aside>
+    <div class="card" id="me">
+      <span class="badge" id="teamBadge"></span>
+      <div class="title" id="title"></div>
+      <div class="role" id="roleInfo"></div>
+      <div class="cd"><i id="cdBar"></i></div>
+      <div id="status"></div>
+      <div id="magic"></div>
+      <div id="fx" class="fx"></div>
+    </div>
+    <div class="card traitor" id="traitor"></div>
+    <div class="card"><div id="timer">1:30</div></div>
+    <div class="card"><h2>Punktestand</h2><div id="scores"></div></div>
+    <div class="card legend">
+      <div><b>Klicken</b> = Feld direkt an eurem Gebiet setzen (helle Felder). Meer ist tabu.</div>
+      <div>Alle 20 s kommt eine <b>Ereigniskarte</b>. Und in jedem Team spielt vielleicht ein <b>Verräter</b> …</div>
+      <div><b>Neutral</b> = sofort eures · <b>Feindfeld</b> = 2 Treffer (abgedunkelt = angeschlagen).</div>
+      <div><b>Rand</b> = Farbe des Vorbesitzers · <b>weißer Punkt</b> = Basis (uneinnehmbar) · <b>weißer Rahmen</b> = Paladin-Schutz.</div>
+      <div>Jedes Feld, das ihr dem <b>Golem</b> abnehmt, bringt einen Extrapunkt.</div>
+    </div>
+  </aside>
+</div>
+<div id="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/board.js"></script>
+<script>
+const socket = io();
+const board = new Board(document.getElementById('cv'));
+const overlay = document.getElementById('overlay'), caption = document.getElementById('caption');
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+const clock = new Clock(overlay, document.getElementById('timer'));
+let me = null, meta = null, readyAt = 0, cdTotal = 2500, magicAt = 0;
+
+function setCaption(text, color, html) { if (html) caption.innerHTML = text; else caption.textContent = text; caption.style.color = color || ''; }
+function fit() {
+  const l = document.getElementById('left');
+  board.fit(l.clientWidth, Math.max(200, l.clientHeight - 50));
+  overlay.style.fontSize = Math.round(board.H * board.cell * 0.4) + 'px';
+}
+window.addEventListener('resize', fit);
+
+// Beitreten (merkt sich die Spieler-ID, damit ein Reload im selben Team bleibt)
+function join(name) {
+  socket.emit('join', { name, pid: store.get('pk_pid') }, r => { store.set('pk_pid', r.pid); store.set('pk_name', name); });
+  document.getElementById('join').style.display = 'none';
+  fit();
+}
+document.getElementById('joinForm').addEventListener('submit', e => { e.preventDefault(); Sound.unlock(); join(document.getElementById('name').value); });
+const savedName = store.get('pk_name');
+if (savedName) document.getElementById('name').value = savedName;
+socket.on('connect', () => { if (me) join(me.name); }); // nach Verbindungsabbruch automatisch wieder rein
+
+socket.on('state', s => { board.load(s); setCaption(''); fit(); });
+socket.on('diff', d => board.diff(d));
+socket.on('event', e => showEvent(document.getElementById('event'), e));
+socket.on('finale', f => board.finale(f, setCaption));
+socket.on('meta', m => {
+  meta = m; clock.setMeta(m);
+  if (board.N) renderScores(document.getElementById('scores'), m, board.colors, board.teams);
+  if (board.N) document.getElementById('fx').textContent = fxText(m, board.teams);
+});
+socket.on('you', y => {
+  me = y;
+  readyAt = performance.now() + y.cooldownMs; cdTotal = y.cooldownTotal;
+  magicAt = y.magicMs == null ? null : performance.now() + y.magicMs;
+  const t = board.teams[y.team];
+  const b = document.getElementById('teamBadge'); b.textContent = t.name; b.style.background = t.color;
+  document.getElementById('title').textContent = y.title;
+  document.getElementById('roleInfo').textContent = board.roleInfo[y.role];
+  document.getElementById('cdBar').style.background = t.color;
+  const tr = document.getElementById('traitor');
+  if (y.traitorFor != null) {
+    const v = board.teams[y.traitorFor];
+    tr.innerHTML = `<b>PSST … DU BIST VERRÄTER!</b><br>Deine Felder sehen aus wie die deines Teams – am Ende zählen sie aber heimlich für <span style="color:${v.color};font-weight:800">${esc(v.name)}</span>. Spiel unauffällig mit und verrate dich nicht!`;
+    tr.style.display = 'block';
+  } else tr.style.display = 'none';
+  if (y.err) toast(y.err);
+});
+
+let toastT;
+function toast(msg) { const el = document.getElementById('toast'); el.textContent = msg; el.style.opacity = 1; clearTimeout(toastT); toastT = setTimeout(() => (el.style.opacity = 0), 1600); }
+
+const cv = document.getElementById('cv');
+cv.addEventListener('click', e => {
+  const i = board.index(e); if (i < 0 || !me) return;
+  if (meta && meta.phase !== 'play') return toast('Die Runde läuft gerade nicht.');
+  if (performance.now() < readyAt - 50) return toast('Noch im Cooldown …');
+  socket.emit('place', i);
+  readyAt = performance.now() + cdTotal; // sofort sperren, Server bestätigt
+});
+cv.addEventListener('mousemove', e => (board.hover = board.index(e)));
+cv.addEventListener('mouseleave', () => (board.hover = -1));
+
+(function loop() {
+  const now = performance.now();
+  clock.step();
+  if (me && meta) {
+    const playing = meta.phase === 'play', left = Math.max(0, readyAt - now), ready = playing && left === 0;
+    document.getElementById('cdBar').style.width = (playing ? 100 * (1 - left / cdTotal) : 0) + '%';
+    document.getElementById('status').textContent =
+      meta.phase === 'lobby' ? 'Warte auf den Start …' : meta.phase === 'countdown' ? 'Gleich geht\'s los …' : meta.phase === 'finale' ? 'Runde vorbei!' : ready ? 'Bereit – setz ein Feld!' : `Cooldown ${(left / 1000).toFixed(1)} s`;
+    document.getElementById('status').style.color = ready ? '#30a46c' : '';
+    board.hl = ready && board.N ? board.frontier(me.team) : null;
+    document.getElementById('magic').textContent = magicAt == null ? '' :
+      (playing && now >= magicAt ? 'Brückenkopf bereit: Du darfst auf jedes neutrale Feld setzen.' : playing ? `Brückenkopf in ${Math.ceil((magicAt - now) / 1000)} s` : '');
+  }
+  board.draw(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

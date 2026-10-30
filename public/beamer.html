@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel-Krieg – Beamer</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .app { grid-template-columns: minmax(0, 1fr) 380px; }
+  #timer { font: 800 56px ui-monospace, Consolas, monospace; line-height: 1; }
+  #phase { color: var(--muted); margin-top: 4px; }
+  .join { display: flex; gap: 12px; align-items: center; }
+  .join img { width: 120px; height: 120px; background: #fff; border-radius: 6px; padding: 4px; flex: none; }
+  .join .url { font: 700 15px ui-monospace, Consolas, monospace; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="left" id="left">
+    <div id="wrap"><canvas id="cv"></canvas><div id="overlay"></div><div id="event"></div></div>
+    <div id="caption"></div>
+  </div>
+  <aside>
+    <div class="card">
+      <div class="brand">PIXEL-KRIEG</div>
+      <div id="timer">1:30</div>
+      <div id="phase">Warte auf Spieler …</div>
+      <div id="fx" class="fx"></div>
+    </div>
+    <div class="card"><h2>Mitmachen</h2>
+      <div class="join"><img src="/qr.svg" alt="QR-Code zum Beitreten"><div><div class="url" id="url"></div><div class="legend">QR-Code scannen oder URL öffnen, Namen eingeben – fertig.</div></div></div>
+    </div>
+    <div class="card"><h2>Punktestand</h2><div id="scores"></div></div>
+  </aside>
+</div>
+<button class="soundbtn primary" id="soundBtn">Ton einschalten</button>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/board.js"></script>
+<script>
+const socket = io();
+const board = new Board(document.getElementById('cv'));
+const overlay = document.getElementById('overlay'), caption = document.getElementById('caption');
+const clock = new Clock(overlay, document.getElementById('timer'));
+
+// Browser spielen Töne erst nach einem Klick ab
+document.getElementById('soundBtn').onclick = e => { Sound.unlock(); Sound.tick(); e.target.remove(); };
+fetch('/info').then(r => r.json()).then(i => (document.getElementById('url').textContent = i.joinUrl));
+
+function setCaption(text, color, html) { if (html) caption.innerHTML = text; else caption.textContent = text; caption.style.color = color || ''; }
+function fit() {
+  const l = document.getElementById('left');
+  board.fit(l.clientWidth, l.clientHeight - 50);
+  overlay.style.fontSize = Math.round(board.H * board.cell * 0.4) + 'px';
+}
+window.addEventListener('resize', fit);
+
+socket.on('state', s => { board.load(s); setCaption(''); fit(); });
+socket.on('diff', d => board.diff(d));
+socket.on('event', e => showEvent(document.getElementById('event'), e));
+socket.on('finale', f => board.finale(f, setCaption));
+socket.on('meta', m => {
+  clock.setMeta(m);
+  if (!board.N) return;
+  renderScores(document.getElementById('scores'), m, board.colors, board.teams, { members: true });
+  const n = m.teams.reduce((a, t) => a + t.length, 0);
+  document.getElementById('phase').textContent =
+    m.phase === 'lobby' ? `${n} Spieler bereit – gleich geht's los` :
+    m.phase === 'countdown' ? 'Achtung …' :
+    m.phase === 'play' ? `${n} Spieler im Kampf` : 'Runde vorbei';
+  document.getElementById('fx').textContent = fxText(m, board.teams);
+});
+
+(function loop() { clock.step(); board.draw(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>

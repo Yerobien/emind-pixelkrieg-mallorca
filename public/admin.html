@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel-Krieg – Admin</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .app { grid-template-columns: minmax(0, 1fr) 400px; }
+  #timer { font: 800 48px ui-monospace, Consolas, monospace; line-height: 1; }
+  #phase { color: var(--muted); margin-top: 4px; font-weight: 700; }
+  .ctrl { display: flex; flex-direction: column; gap: 8px; }
+  .ctrl .big { font-size: 22px; padding: 14px; }
+  .ctrl .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .ctrl .row button { flex: 1; }
+  .ctrl input[type=number] { width: 80px; }
+  .ctrl label { display: flex; gap: 6px; align-items: center; }
+  .links a { color: var(--text); font-family: ui-monospace, Consolas, monospace; font-size: 13px; word-break: break-all; }
+  .links div { margin: 4px 0; }
+  #locked { display: none; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="locked" class="card">Kein oder falscher Admin-Key. Öffne <code>/admin?key=DEIN_KEY</code>.</div>
+<div class="app" id="appEl">
+  <div class="left" id="left">
+    <div id="wrap"><canvas id="cv"></canvas><div id="overlay"></div><div id="event"></div></div>
+    <div id="caption"></div>
+  </div>
+  <aside>
+    <div class="card">
+      <div class="brand">PIXEL-KRIEG · ADMIN</div>
+      <div id="timer">1:30</div>
+      <div id="phase">Lobby</div>
+    </div>
+    <div class="card ctrl">
+      <h2>Steuerung</h2>
+      <div class="row"><label>Rundendauer (s)</label><input id="round" type="number" min="15" max="600" value="90"></div>
+      <div class="row"><label><input type="checkbox" id="optTraitors" checked> Verräter</label><label><input type="checkbox" id="optEvents" checked> Ereigniskarten</label></div>
+      <button class="primary big" data-cmd="start">▶ Runde starten (5 s Countdown)</button>
+      <div class="row">
+        <button data-cmd="stop">Runde sofort beenden</button>
+        <button data-cmd="reset">Feld zurücksetzen</button>
+      </div>
+      <div class="row">
+        <button data-cmd="bots">+4 Bots</button>
+        <button data-cmd="nobots">Bots raus</button>
+        <button data-cmd="kickoffline">Offline entfernen</button>
+      </div>
+      <h2 style="margin-top:6px">Ereignis jetzt auslösen</h2>
+      <div class="row">
+        <button data-cmd="event" data-ev="siesta">Siesta</button>
+        <button data-cmd="event" data-ev="deploy">Deployment</button>
+        <button data-cmd="event" data-ev="sangria">Sangria</button>
+        <button data-cmd="event" data-ev="golem">Golem</button>
+        <button data-cmd="event" data-ev="underdog">Rückenwind</button>
+      </div>
+      <div class="row"><button id="soundBtn">Ton auf diesem Gerät: aus</button></div>
+    </div>
+    <div class="card links"><h2>Links</h2>
+      <div>Spieler: <a id="joinUrl" target="_blank"></a></div>
+      <div>Beamer: <a href="/beamer" target="_blank">/beamer</a></div>
+    </div>
+    <div class="card"><h2>Teams &amp; Spieler</h2><div id="scores"></div></div>
+  </aside>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/board.js"></script>
+<script>
+const socket = io();
+const key = new URLSearchParams(location.search).get('key') || '';
+const board = new Board(document.getElementById('cv'));
+const overlay = document.getElementById('overlay'), caption = document.getElementById('caption');
+const clock = new Clock(overlay, document.getElementById('timer'));
+let roundSet = false;
+
+socket.on('connect', () => socket.emit('admin', { key, cmd: 'hello' }));
+socket.on('adminErr', () => { document.getElementById('locked').style.display = 'block'; document.getElementById('appEl').style.display = 'none'; });
+
+document.querySelector('.ctrl').addEventListener('click', e => {
+  const cmd = e.target.dataset && e.target.dataset.cmd; if (!cmd) return;
+  if (cmd === 'reset' && !confirm('Feld wirklich zurücksetzen?')) return;
+  socket.emit('admin', { key, cmd, round: +document.getElementById('round').value, event: e.target.dataset.ev,
+    traitors: document.getElementById('optTraitors').checked, events: document.getElementById('optEvents').checked });
+});
+document.getElementById('soundBtn').onclick = e => {
+  if (Sound.on) { Sound.on = false; e.target.textContent = 'Ton auf diesem Gerät: aus'; }
+  else { Sound.unlock(); Sound.tick(); e.target.textContent = 'Ton auf diesem Gerät: an'; }
+};
+fetch('/info').then(r => r.json()).then(i => { const a = document.getElementById('joinUrl'); a.textContent = a.href = i.joinUrl; });
+
+function setCaption(text, color, html) { if (html) caption.innerHTML = text; else caption.textContent = text; caption.style.color = color || ''; }
+function fit() {
+  const l = document.getElementById('left');
+  board.fit(l.clientWidth, l.clientHeight - 50);
+  overlay.style.fontSize = Math.round(board.H * board.cell * 0.4) + 'px';
+}
+window.addEventListener('resize', fit);
+
+socket.on('state', s => { board.load(s); setCaption(''); fit(); });
+socket.on('diff', d => board.diff(d));
+socket.on('event', e => showEvent(document.getElementById('event'), e));
+socket.on('finale', f => board.finale(f, setCaption));
+socket.on('meta', m => {
+  clock.setMeta(m);
+  if (!roundSet) { document.getElementById('round').value = m.roundSecs; roundSet = true; }
+  const busy = m.phase === 'countdown' || m.phase === 'play';
+  document.querySelector('[data-cmd=start]').disabled = busy;
+  document.querySelector('[data-cmd=stop]').disabled = m.phase !== 'play';
+  document.querySelectorAll('[data-cmd=event]').forEach(b => (b.disabled = m.phase !== 'play'));
+  const n = m.teams.reduce((a, t) => a + t.length, 0);
+  document.getElementById('phase').textContent = { lobby: 'Lobby', countdown: 'Countdown', play: 'Läuft', finale: 'Finale' }[m.phase] + ` · ${n} Spieler`;
+  if (board.N) renderScores(document.getElementById('scores'), m, board.colors, board.teams, { members: true });
+});
+
+(function loop() { clock.step(); board.draw(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>
