@@ -1,0 +1,19 @@
+{
+  "name": "pixel-krieg",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Pixel-Krieg – Multiplayer-Territorialspiel für das eMind-Event",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1"
+  }
+}
